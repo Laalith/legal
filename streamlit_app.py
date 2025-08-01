@@ -1,106 +1,90 @@
+import os
 import streamlit as st
-import pdfplumber
 from transformers import pipeline
+import pdfplumber
 import docx2txt
+import tempfile
 
-# Initialize pipelines with caching to avoid reload delays
-@st.cache_resource(show_spinner=False)
-def load_simplifier():
-    return pipeline("text2text-generation", model="t5-small")
+# Disable TensorFlow to avoid import errors
+os.environ["TRANSFORMERS_NO_TF"] = "1"
 
-@st.cache_resource(show_spinner=False)
-def load_ner():
-    return pipeline("ner", grouped_entities=True, model="dslim/bert-base-NER")
+# Initialize pipelines once (load lightweight models or placeholders)
+@st.cache_resource
+def load_models():
+    simplifier = pipeline("text2text-generation", model="t5-small")  # Clause Simplification
+    ner = pipeline("ner", aggregation_strategy="simple")            # Named Entity Recognition
+    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")  # Document Type Classification
+    # You can add more or use custom models for clause extraction later
+    return simplifier, ner, classifier
 
-simplifier = load_simplifier()
-ner_pipeline = load_ner()
+simplifier, ner, classifier = load_models()
 
-# Utility functions
-def extract_text_from_pdf(file):
-    text = ""
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-    return text
-
-def extract_text_from_docx(file):
-    # docx2txt expects a path or file-like object
-    return docx2txt.process(file)
-
-def extract_text_from_txt(file):
-    return file.read().decode("utf-8")
-
-def simplify_text(text):
-    # Split long text into chunks (max ~512 tokens) for T5
-    max_chunk_size = 500
-    simplified_parts = []
-    for i in range(0, len(text), max_chunk_size):
-        chunk = text[i:i+max_chunk_size]
-        result = simplifier(chunk, max_length=512, truncation=True)
-        simplified_parts.append(result[0]['generated_text'])
-    return "\n\n".join(simplified_parts)
-
-def classify_document(text):
-    # Placeholder for document classification
-    # Replace with a trained classifier model or rules later
-    if "non-disclosure" in text.lower() or "confidential" in text.lower():
-        return "NDA (Non-Disclosure Agreement)"
-    elif "lease" in text.lower() or "tenant" in text.lower():
-        return "Lease Agreement"
-    elif "employment" in text.lower() or "employee" in text.lower():
-        return "Employment Contract"
-    elif "service" in text.lower():
-        return "Service Agreement"
+# Helper functions to extract text from files
+def extract_text(file):
+    if file.type == "application/pdf":
+        with pdfplumber.open(file) as pdf:
+            return "\n".join(page.extract_text() or "" for page in pdf.pages)
+    elif file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        return docx2txt.process(file)
+    elif file.type == "text/plain":
+        return file.getvalue().decode("utf-8")
     else:
-        return "Unknown Document Type"
+        return ""
 
-# --- Streamlit UI ---
+# Clause extraction example (simple split by semicolons or newlines)
+def extract_clauses(text):
+    clauses = [c.strip() for c in text.split('\n') if c.strip()]
+    return clauses if clauses else [text]
 
-st.set_page_config(page_title="Legal Document Analyzer", layout="wide")
+# UI customization: background color
+def set_background_color():
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background-color: #f0f2f6;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
-st.title("📄 Legal Document Analyzer Prototype")
+set_background_color()
 
-uploaded_file = st.file_uploader("Upload legal document (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"])
+st.title("Legal Document Analyzer Prototype")
 
-if uploaded_file is not None:
-    file_type = uploaded_file.name.split('.')[-1].lower()
-    with st.spinner("Extracting text..."):
-        if file_type == "pdf":
-            text = extract_text_from_pdf(uploaded_file)
-        elif file_type == "docx":
-            text = extract_text_from_docx(uploaded_file)
-        elif file_type == "txt":
-            text = extract_text_from_txt(uploaded_file)
-        else:
-            st.error("Unsupported file type!")
-            st.stop()
+uploaded_file = st.file_uploader("Upload a legal document (PDF, DOCX, TXT)", 
+                                 type=["pdf", "docx", "txt"])
 
-    st.subheader("Extracted Text")
-    st.text_area("Full Document Text", text, height=250)
-
-    # Document classification
-    doc_type = classify_document(text)
-    st.markdown(f"**Document Type:** {doc_type}")
-
-    # Clause simplification (You can improve clause detection and breakdown later)
-    st.subheader("Clause Simplification")
-    with st.spinner("Simplifying clauses..."):
-        simplified_text = simplify_text(text)
-    st.text_area("Simplified Text", simplified_text, height=250)
-
-    # Named Entity Recognition
-    st.subheader("Named Entities (NER)")
-    with st.spinner("Extracting entities..."):
-        entities = ner_pipeline(text)
-
-    if entities:
-        for ent in entities:
-            st.markdown(f"- **{ent['entity_group']}**: {ent['word']}")
+if uploaded_file:
+    text = extract_text(uploaded_file)
+    
+    if not text.strip():
+        st.warning("Couldn't extract any text from the uploaded document.")
     else:
-        st.write("No named entities found.")
-
-else:
-    st.info("Upload a legal document in PDF, DOCX, or TXT format to get started.")
-
+        st.subheader("Original Document Text")
+        st.write(text[:3000] + ("..." if len(text) > 3000 else ""))  # show first 3000 chars only
+        
+        # Document Type Classification
+        candidate_labels = ["NDA", "Lease", "Employment Contract", "Service Agreement", "Other"]
+        classification = classifier(text, candidate_labels)
+        st.subheader("Document Classification")
+        st.write(classification)
+        
+        # Clause Extraction
+        st.subheader("Clause Extraction")
+        clauses = extract_clauses(text)
+        st.write(f"Extracted {len(clauses)} clauses.")
+        
+        # Show clauses with option to simplify and do NER
+        for i, clause in enumerate(clauses[:10]):  # limit to first 10 clauses for speed
+            st.markdown(f"**Clause {i+1}:**")
+            st.write(clause)
+            
+            if st.button(f"Simplify Clause {i+1}", key=f"simplify_{i}"):
+                simplified = simplifier(clause, max_length=150)[0]['generated_text']
+                st.info(f"Simplified: {simplified}")
+            
+            if st.button(f"Extract Entities from Clause {i+1}", key=f"ner_{i}"):
+                entities = ner(clause)
+                st.json(entities)
