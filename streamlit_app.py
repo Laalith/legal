@@ -4,6 +4,25 @@ from transformers import pipeline
 import pdfplumber
 import docx2txt
 import tempfile
+# Set Streamlit configurationimport streamlit as st
+
+# Custom dark background
+st.markdown(
+    """
+    <style>
+    body {
+        background-color: #000000;
+        color: white;
+    }
+    .stApp {
+        background-color: #000000;
+        color: white;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 
 # Disable TensorFlow to avoid import errors
 os.environ["TRANSFORMERS_NO_TF"] = "1"
