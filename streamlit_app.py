@@ -5,6 +5,14 @@ import os
 import spacy
 import pandas as pd
 from transformers import pipeline
+from spacy.cli import download
+
+# Ensure the model is downloaded
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    download("en_core_web_sm")
+    nlp = spacy.load("en_core_web_sm")
 
 # Load spaCy model
 nlp = spacy.load("en_core_web_sm")
