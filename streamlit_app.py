@@ -1,109 +1,71 @@
-import os
 import streamlit as st
-from transformers import pipeline
 import pdfplumber
 import docx2txt
-import tempfile
-# Set Streamlit configurationimport streamlit as st
+import os
+import spacy
+import pandas as pd
+from transformers import pipeline
 
-# Custom dark background
-st.markdown(
-    """
+# Load spaCy model
+nlp = spacy.load("en_core_web_sm")
+
+# Load transformers model (small for memory efficiency)
+simplifier = pipeline("text2text-generation", model="t5-small")
+
+# Background color using CSS
+st.markdown("""
     <style>
-    body {
-        background-color: #000000;
-        color: white;
-    }
     .stApp {
         background-color: #000000;
-        color: white;
+        color: #FFFFFF;
     }
     </style>
-    """,
-    unsafe_allow_html=True
-)
+    """, unsafe_allow_html=True)
 
+st.title("🧠 Legal Document Analyzer")
 
-# Disable TensorFlow to avoid import errors
-os.environ["TRANSFORMERS_NO_TF"] = "1"
+uploaded_file = st.file_uploader("Upload legal document (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"])
 
-# Initialize pipelines once (load lightweight models or placeholders)
-@st.cache_resource
-def load_models():
-    simplifier = pipeline("text2text-generation", model="t5-small")  # Clause Simplification
-    ner = pipeline("ner", aggregation_strategy="simple")            # Named Entity Recognition
-    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")  # Document Type Classification
-    # You can add more or use custom models for clause extraction later
-    return simplifier, ner, classifier
-
-simplifier, ner, classifier = load_models()
-
-# Helper functions to extract text from files
 def extract_text(file):
-    if file.type == "application/pdf":
+    if file.name.endswith(".pdf"):
         with pdfplumber.open(file) as pdf:
-            return "\n".join(page.extract_text() or "" for page in pdf.pages)
-    elif file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            return "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
+    elif file.name.endswith(".docx"):
         return docx2txt.process(file)
-    elif file.type == "text/plain":
-        return file.getvalue().decode("utf-8")
-    else:
-        return ""
-
-# Clause extraction example (simple split by semicolons or newlines)
-def extract_clauses(text):
-    clauses = [c.strip() for c in text.split('\n') if c.strip()]
-    return clauses if clauses else [text]
-
-# UI customization: background color
-def set_background_color():
-    st.markdown(
-        """
-        <style>
-        .stApp {
-            background-color: #f0f2f6;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
-set_background_color()
-
-st.title("Legal Document Analyzer Prototype")
-
-uploaded_file = st.file_uploader("Upload a legal document (PDF, DOCX, TXT)", 
-                                 type=["pdf", "docx", "txt"])
+    elif file.name.endswith(".txt"):
+        return str(file.read(), "utf-8")
+    return ""
 
 if uploaded_file:
     text = extract_text(uploaded_file)
-    
-    if not text.strip():
-        st.warning("Couldn't extract any text from the uploaded document.")
-    else:
-        st.subheader("Original Document Text")
-        st.write(text[:3000] + ("..." if len(text) > 3000 else ""))  # show first 3000 chars only
-        
-        # Document Type Classification
-        candidate_labels = ["NDA", "Lease", "Employment Contract", "Service Agreement", "Other"]
-        classification = classifier(text, candidate_labels)
-        st.subheader("Document Classification")
-        st.write(classification)
-        
-        # Clause Extraction
-        st.subheader("Clause Extraction")
-        clauses = extract_clauses(text)
-        st.write(f"Extracted {len(clauses)} clauses.")
-        
-        # Show clauses with option to simplify and do NER
-        for i, clause in enumerate(clauses[:10]):  # limit to first 10 clauses for speed
-            st.markdown(f"**Clause {i+1}:**")
-            st.write(clause)
-            
-            if st.button(f"Simplify Clause {i+1}", key=f"simplify_{i}"):
-                simplified = simplifier(clause, max_length=150)[0]['generated_text']
-                st.info(f"Simplified: {simplified}")
-            
-            if st.button(f"Extract Entities from Clause {i+1}", key=f"ner_{i}"):
-                entities = ner(clause)
-                st.json(entities)
+    st.subheader("📄 Extracted Text")
+    st.text_area("", text, height=200)
+
+    if st.button("Simplify Clauses"):
+        simplified = simplifier(text[:512])[0]['generated_text']  # Limit input for small model
+        st.subheader("🧾 Simplified Clauses")
+        st.write(simplified)
+
+    if st.button("Named Entity Recognition"):
+        doc = nlp(text)
+        entities = [(ent.text, ent.label_) for ent in doc.ents]
+        st.subheader("🔍 Named Entities")
+        st.dataframe(pd.DataFrame(entities, columns=["Entity", "Label"]))
+
+    if st.button("Extract Clauses"):
+        clauses = [line.strip() for line in text.split(".") if len(line.strip()) > 20]
+        st.subheader("📜 Extracted Clauses")
+        for clause in clauses[:10]:
+            st.markdown(f"- {clause}")
+
+    if st.button("Classify Document Type"):
+        if "lease" in text.lower():
+            doc_type = "Lease Agreement"
+        elif "nda" in text.lower() or "non-disclosure" in text.lower():
+            doc_type = "Non-Disclosure Agreement"
+        elif "employment" in text.lower():
+            doc_type = "Employment Contract"
+        else:
+            doc_type = "Service Agreement or Other"
+        st.subheader("📂 Document Type")
+        st.write(doc_type)
